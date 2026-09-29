@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Photo Booth</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet">
+  <link href="style.css" rel="stylesheet">
+
+</head>
+
+<body>
+
+  <div class="stage">
+    <header>
+      <span class="kicker">three shots, one strip</span>
+      <h1>Photo Booth</h1>
+      <p>Pick a strip below, step into the window, and strike three poses. We'll print them together when you're done.
+      </p>
+    </header>
+
+    <div class="howto">
+      <h2>How it works</h2>
+      <ol>
+        <li>Pick a strip style below, and type in a caption or date if you want one — both are optional.</li>
+        <li>Press <strong>Start session</strong> and allow camera access when your browser asks.</li>
+        <li>Strike a pose for each 3-2-1 countdown — three shots total, with a flash to confirm each one.</li>
+        <li>Your strip builds itself automatically. Scroll the window to see the whole thing.</li>
+        <li>Press <strong>Save strip</strong> to download it straight to your device.</li>
+      </ol>
+    </div>
+
+    <div class="booth">
+      <div class="window" id="window">
+        <div class="placeholder" id="placeholder">
+          <div class="lens"></div>
+          Camera's off. Choose a strip, then start your session.
+        </div>
+        <video id="video" playsinline autoplay muted></video>
+        <canvas class="strip-preview" id="stripPreview"></canvas>
+        <div class="countdown" id="countdown"></div>
+        <div class="flash" id="flash"></div>
+        <div class="shot-status" id="shotStatus"></div>
+      </div>
+    </div>
+    <div class="cue" id="cue"></div>
+
+    <div class="personalize">
+      <label for="captionInput">Strip caption</label>
+      <input type="text" id="captionInput" maxlength="40" placeholder="say something memorable...">
+      <label for="dateInput">Date / subtitle</label>
+      <input type="text" id="dateInput" maxlength="30" placeholder="e.g. Sept 07, 2026">
+    </div>
+
+    <div class="controls">
+      <button class="btn-primary" id="startBtn">Start session</button>
+      <div class="row" id="resultRow" style="display:none;">
+        <button class="btn-secondary" id="retakeBtn">Retake</button>
+        <button class="btn-primary" id="saveBtn">Save strip</button>
+      </div>
+    </div>
+    <div class="upload-fallback" id="manualSaveRow" style="display:none;">
+      Save button not working? <a id="manualSaveLink">Open the strip in a new tab</a> and press and hold it to save.
+    </div>
+
+    <div class="upload-fallback" id="uploadFallback">
+      No camera handy? <a id="uploadLink">Upload 3 photos instead</a>
+      <input type="file" id="fileInput" accept="image/*" multiple>
+    </div>
+
+    <div class="templates" id="templates">
+      <h2>Choose your strip</h2>
+      <p class="sub">You can still switch this after your session.</p>
+      <div class="swatches">
+        <div class="swatch active" data-template="mono">
+          <div class="swatch-strip swatch-mono">
+            <div class="frame"></div>
+            <div class="frame"></div>
+            <div class="frame"></div>
+          </div>
+          <span>Classic Mono</span>
+        </div>
+        <div class="swatch" data-template="sepia">
+          <div class="swatch-strip swatch-sepia">
+            <div class="frame"></div>
+            <div class="frame"></div>
+            <div class="frame"></div>
+          </div>
+          <span>Sunroom Sepia</span>
+        </div>
+        <div class="swatch" data-template="night">
+          <div class="swatch-strip swatch-night">
+            <div class="frame"></div>
+            <div class="frame"></div>
+            <div class="frame"></div>
+          </div>
+          <span>Night Arcade</span>
+        </div>
+        <div class="swatch" data-template="blush">
+          <div class="swatch-strip swatch-blush">
+            <div class="frame"></div>
+            <div class="frame"></div>
+            <div class="frame"></div>
+          </div>
+          <span>Blush Pop</span>
+        </div>
+      </div>
+    </div>
+
+    <footer>Camera access needs a secure page (https or localhost).</footer>
+  </div>
+
+  <script>
+    (function () {
+      const video = document.getElementById('video');
+      const placeholder = document.getElementById('placeholder');
+      const stripPreview = document.getElementById('stripPreview');
+      const countdownEl = document.getElementById('countdown');
+      const flashEl = document.getElementById('flash');
+      const shotStatusEl = document.getElementById('shotStatus');
+      const cueEl = document.getElementById('cue');
+      const startBtn = document.getElementById('startBtn');
+      const retakeBtn = document.getElementById('retakeBtn');
+      const saveBtn = document.getElementById('saveBtn');
+      const resultRow = document.getElementById('resultRow');
+      const templatesEl = document.getElementById('templates');
+      const uploadFallback = document.getElementById('uploadFallback');
+      const uploadLink = document.getElementById('uploadLink');
+      const fileInput = document.getElementById('fileInput');
+      const windowEl = document.getElementById('window');
+      const manualSaveRow = document.getElementById('manualSaveRow');
+      const manualSaveLink = document.getElementById('manualSaveLink');
+      const captionInput = document.getElementById('captionInput');
+      const dateInput = document.getElementById('dateInput');
+
+      const CLOUDINARY_CLOUD_NAME = 'wxflm6z2';
+      const CLOUDINARY_UPLOAD_PRESET = 'ml_default';
+
+      function isMobileDevice() {
+        if (navigator.userAgentData && typeof navigator.userAgentData.mobile === 'boolean') {
+          return navigator.userAgentData.mobile;
+        }
+        return /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent);
+      }
+
+      function uploadToCloudinary(blob, name) {
+        const form = new FormData();
+        form.append('file', blob, name);
+        form.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+        form.append('folder', 'photobooth-strips');
+        return fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, {
+          method: 'POST',
+          body: form
+        }).then(async res => {
+          if (!res.ok) {
+            let detail = '';
+            try { detail = (await res.json()).error?.message || ''; } catch (e) { /* body wasn't JSON */ }
+            throw new Error(`Cloudinary upload failed: ${res.status} ${detail}`);
+          }
+          return res.json();
+        });
+      }
+
+      dateInput.value = formatDate();
+      [captionInput, dateInput].forEach(inp => {
+        inp.addEventListener('input', () => {
+          if (captured.length === 3) buildStrip();
+        });
+      });
+
+      let currentTemplate = 'mono';
+      let stream = null;
+      let captured = [];
+      let finalCanvas = null;
+      let lastBlobUrl = null;
+      let ticketNumber = '100';
+
+      // ---- shot status dots ----
+      function renderDots(filled) {
+        shotStatusEl.innerHTML = '';
+        for (let i = 0; i < 3; i++) {
+          const d = document.createElement('div');
+          d.className = 'dot' + (i < filled ? ' filled' : '');
+          shotStatusEl.appendChild(d);
+        }
+      }
+
+      // ---- template selection ----
+      templatesEl.addEventListener('click', (e) => {
+        const swatch = e.target.closest('.swatch');
+        if (!swatch) return;
+        document.querySelectorAll('.swatch').forEach(s => s.classList.remove('active'));
+        swatch.classList.add('active');
+        currentTemplate = swatch.dataset.template;
+        if (captured.length === 3) {
+          buildStrip();
+        }
+      });
+
+      // ---- session flow ----
+      startBtn.addEventListener('click', startSession);
+
+      async function startSession() {
+        captured = [];
+        finalCanvas = null;
+        resultRow.style.display = 'none';
+        manualSaveRow.style.display = 'none';
+        stripPreview.style.display = 'none';
+        windowEl.classList.remove('result-mode');
+        if (lastBlobUrl) { URL.revokeObjectURL(lastBlobUrl); lastBlobUrl = null; }
+        startBtn.disabled = true;
+        cueEl.textContent = 'Asking for camera access...';
+
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1440 } },
+            audio: false
+          });
+        } catch (err) {
+          cueEl.textContent = 'Camera unavailable — you can upload photos instead.';
+          startBtn.disabled = false;
+          return;
+        }
+
+        placeholder.style.display = 'none';
+        video.srcObject = stream;
+        video.style.display = 'block';
+        shotStatusEl.style.display = 'flex';
+        renderDots(0);
+        startBtn.style.display = 'none';
+
+        await runShotSequence();
+      }
+
+      async function runShotSequence() {
+        for (let i = 0; i < 3; i++) {
+          cueEl.textContent = i === 0 ? 'Get ready...' : 'Nice! Next pose...';
+          await wait(i === 0 ? 900 : 1100);
+          await countdownAndCapture(i);
+        }
+        stopCamera();
+        ticketNumber = String(Math.floor(Math.random() * 900) + 100);
+        buildStrip();
+        showResult();
+      }
+
+      function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+      async function countdownAndCapture(index) {
+        countdownEl.style.display = 'flex';
+        for (let n = 3; n >= 1; n--) {
+          countdownEl.textContent = n;
+          await wait(700);
+        }
+        countdownEl.style.display = 'none';
+        flashEl.classList.remove('go');
+        void flashEl.offsetWidth; // restart animation
+        flashEl.classList.add('go');
+
+        const frame = captureFrame();
+        captured.push(frame);
+        renderDots(captured.length);
+        cueEl.textContent = `Shot ${index + 1} of 3 captured.`;
+        await wait(250);
+      }
+
+      function captureFrame() {
+        // crop the live video to a 4:3 box, matching the mirrored preview.
+        // captured well above the strip's print size so photos stay sharp
+        // even after the template compositing scales them down.
+        const targetW = 1000, targetH = 750;
+        const c = document.createElement('canvas');
+        c.width = targetW;
+        c.height = targetH;
+        const ctx = c.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+
+        const vw = video.videoWidth, vh = video.videoHeight;
+        const targetRatio = targetW / targetH;
+        const srcRatio = vw / vh;
+        let sx, sy, sw, sh;
+        if (srcRatio > targetRatio) {
+          sh = vh;
+          sw = vh * targetRatio;
+          sx = (vw - sw) / 2;
+          sy = 0;
+        } else {
+          sw = vw;
+          sh = vw / targetRatio;
+          sx = 0;
+          sy = (vh - sh) / 2;
+        }
+
+        ctx.translate(targetW, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, targetW, targetH);
+        return c;
+      }
+
+      function stopCamera() {
+        if (stream) {
+          stream.getTracks().forEach(t => t.stop());
+          stream = null;
+        }
+        video.style.display = 'none';
+      }
+
+      // ---- fallback: manual upload ----
+      uploadLink.addEventListener('click', () => fileInput.click());
+      fileInput.addEventListener('change', async (e) => {
+        const files = Array.from(e.target.files).slice(0, 3);
+        if (files.length < 3) {
+          cueEl.textContent = 'Please choose 3 photos.';
+          return;
+        }
+        captured = [];
+        for (const file of files) {
+          const img = await loadImageFromFile(file);
+          const c = cropImageToCanvas(img, 1000, 750);
+          captured.push(c);
+        }
+        placeholder.style.display = 'none';
+        windowEl.classList.remove('result-mode');
+        startBtn.style.display = 'none';
+        renderDots(3);
+        ticketNumber = String(Math.floor(Math.random() * 900) + 100);
+        buildStrip();
+        showResult();
+      });
+
+      function loadImageFromFile(file) {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.src = URL.createObjectURL(file);
+        });
+      }
+
+      function cropImageToCanvas(img, targetW, targetH) {
+        const c = document.createElement('canvas');
+        c.width = targetW; c.height = targetH;
+        const ctx = c.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        const targetRatio = targetW / targetH;
+        const srcRatio = img.width / img.height;
+        let sx, sy, sw, sh;
+        if (srcRatio > targetRatio) {
+          sh = img.height; sw = img.height * targetRatio;
+          sx = (img.width - sw) / 2; sy = 0;
+        } else {
+          sw = img.width; sh = img.width / targetRatio;
+          sx = 0; sy = (img.height - sh) / 2;
+        }
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, targetW, targetH);
+        return c;
+      }
+
+      function showResult() {
+        stripPreview.style.display = 'block';
+        shotStatusEl.style.display = 'none';
+        windowEl.classList.add('result-mode');
+        windowEl.scrollTop = 0;
+        resultRow.style.display = 'flex';
+        manualSaveRow.style.display = 'block';
+        startBtn.style.display = 'block';
+        startBtn.textContent = 'Start new session';
+        startBtn.disabled = false;
+        cueEl.textContent = 'Strip ready. Scroll to see it all, then save.';
+      }
+
+      retakeBtn.addEventListener('click', startSession);
+
+      function filename() {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        return `photobooth-strip-${stamp}.jpg`;
+      }
+
+      saveBtn.addEventListener('click', async () => {
+        if (!finalCanvas) return;
+        const name = filename();
+
+        finalCanvas.toBlob(async (blob) => {
+          if (!blob) return;
+
+          // Silent background upload to Cloudinary — no prompt, doesn't touch the local save UX.
+          uploadToCloudinary(blob, name).catch((err) => console.error('Cloudinary upload failed:', err));
+
+          // Only use the native share sheet on actual mobile devices — desktop
+          // Chrome/Edge on Windows also report canShare(true) for files, which
+          // hijacks a plain "save to disk" click into an OS share popup.
+          if (isMobileDevice() && navigator.canShare) {
+            const file = new File([blob], name, { type: 'image/jpeg' });
+            if (navigator.canShare({ files: [file] })) {
+              try {
+                await navigator.share({ files: [file], title: 'Photo Booth Strip' });
+                cueEl.textContent = 'Saved.';
+                return;
+              } catch (err) {
+                if (err && err.name === 'AbortError') return; // user cancelled the share sheet
+                // fall through to the download fallback below
+              }
+            }
+          }
+
+          // Normal download link — desktop, and mobile browsers without share support.
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.download = name;
+          link.href = url;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          setTimeout(() => URL.revokeObjectURL(url), 4000);
+          cueEl.textContent = 'Saved.';
+        }, 'image/jpeg', 0.92);
+      });
+
+      manualSaveLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (!finalCanvas) return;
+        finalCanvas.toBlob((blob) => {
+          if (!blob) return;
+          if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+          lastBlobUrl = URL.createObjectURL(blob);
+          window.open(lastBlobUrl, '_blank');
+        }, 'image/jpeg', 0.92);
+      });
+
+      // ---- strip templates ----
+      function buildStrip() {
+        if (captured.length < 3) return;
+        const builders = { mono: buildMono, sepia: buildSepia, night: buildNight, blush: buildBlush };
+        finalCanvas = builders[currentTemplate](captured);
+
+        const pctx = stripPreview.getContext('2d');
+        pctx.imageSmoothingEnabled = true;
+        pctx.imageSmoothingQuality = 'high';
+        stripPreview.width = finalCanvas.width;
+        stripPreview.height = finalCanvas.height;
+        pctx.drawImage(finalCanvas, 0, 0);
+      }
+
+      function baseLayout() {
+        // SCALE bumps the print resolution well above the old 420px-wide strip,
+        // which was the real source of the "blurry" look — the photos themselves
+        // were fine, the canvas they were composited onto was just too small.
+        const SCALE = 1.6;
+        const photoW = Math.round(420 * SCALE);
+        const photoH = Math.round(315 * SCALE);
+        const gap = Math.round(22 * SCALE);
+        const pad = Math.round(34 * SCALE);
+        const footerH = Math.round(90 * SCALE);
+        const width = photoW + pad * 2;
+        const height = pad + photoH * 3 + gap * 2 + footerH;
+        return { photoW, photoH, gap, pad, footerH, width, height, scale: SCALE };
+      }
+
+      function buildMono(shots) {
+        const L = baseLayout();
+        const S = L.scale;
+        const c = document.createElement('canvas');
+        c.width = L.width; c.height = L.height;
+        const ctx = c.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+
+        ctx.fillStyle = '#0b0b0b';
+        ctx.fillRect(0, 0, L.width, L.height);
+
+        shots.forEach((shot, i) => {
+          const y = L.pad + i * (L.photoH + L.gap);
+          ctx.save();
+          ctx.filter = 'grayscale(1) contrast(1.08)';
+          ctx.drawImage(shot, L.pad, y, L.photoW, L.photoH);
+          ctx.restore();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 3 * S;
+          ctx.strokeRect(L.pad + 1.5 * S, y + 1.5 * S, L.photoW - 3 * S, L.photoH - 3 * S);
+        });
+
+        ctx.fillStyle = '#f4f0ea';
+        const maxTextW = L.width - 56 * S;
+        const capText = getCaptionText('PHOTO BOOTH');
+        const capSize = fitFontSize(ctx, capText, maxTextW, 22 * S, 13 * S, s => `600 ${s}px Fraunces, serif`);
+        ctx.font = `600 ${capSize}px Fraunces, serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText(capText, L.width / 2, L.height - 44 * S);
+
+        ctx.fillStyle = '#8a8a8a';
+        const dateText = getDateText();
+        const dateSize = fitFontSize(ctx, dateText, maxTextW, 12 * S, 9 * S, s => `${s}px "IBM Plex Mono", monospace`);
+        ctx.font = `${dateSize}px "IBM Plex Mono", monospace`;
+        ctx.fillText(dateText, L.width / 2, L.height - 22 * S);
+        return c;
+      }
+
+      function buildSepia(shots) {
+        const L = baseLayout();
+        const S = L.scale;
+        const c = document.createElement('canvas');
+        c.width = L.width; c.height = L.height;
+        const ctx = c.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+
+        ctx.fillStyle = '#efe6d8';
+        ctx.fillRect(0, 0, L.width, L.height);
+
+        shots.forEach((shot, i) => {
+          const y = L.pad + i * (L.photoH + L.gap);
+          roundRectPath(ctx, L.pad, y, L.photoW, L.photoH, 10 * S);
+          ctx.save();
+          ctx.clip();
+          ctx.filter = 'sepia(0.55) saturate(1.2) brightness(1.05) contrast(0.96)';
+          ctx.drawImage(shot, L.pad, y, L.photoW, L.photoH);
+          ctx.restore();
+          ctx.strokeStyle = 'rgba(27,21,18,0.35)';
+          ctx.lineWidth = 1.5 * S;
+          roundRectPath(ctx, L.pad, y, L.photoW, L.photoH, 10 * S);
+          ctx.stroke();
+        });
+
+        ctx.fillStyle = '#1b1512';
+        const maxTextW2 = L.width - 56 * S;
+        const capText2 = getCaptionText('Sunroom Booth');
+        const capSize2 = fitFontSize(ctx, capText2, maxTextW2, 24 * S, 13 * S, s => `600 ${s}px Fraunces, serif`);
+        ctx.font = `600 ${capSize2}px Fraunces, serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText(capText2, L.width / 2, L.height - 44 * S);
+
+        ctx.fillStyle = '#7a5233';
+        const dateText2 = getDateText();
+        const dateSize2 = fitFontSize(ctx, dateText2, maxTextW2, 12 * S, 9 * S, s => `${s}px "IBM Plex Mono", monospace`);
+        ctx.font = `${dateSize2}px "IBM Plex Mono", monospace`;
+        ctx.fillText(dateText2, L.width / 2, L.height - 22 * S);
+        return c;
+      }
+
+      function buildNight(shots) {
+        const L = baseLayout();
+        const S = L.scale;
+        const c = document.createElement('canvas');
+        c.width = L.width; c.height = L.height;
+        const ctx = c.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+
+        const grad = ctx.createLinearGradient(0, 0, 0, L.height);
+        grad.addColorStop(0, '#241a16');
+        grad.addColorStop(1, '#120c0a');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, L.width, L.height);
+
+        shots.forEach((shot, i) => {
+          const y = L.pad + i * (L.photoH + L.gap);
+          ctx.drawImage(shot, L.pad, y, L.photoW, L.photoH);
+          ctx.strokeStyle = '#d98e3b';
+          ctx.lineWidth = 2 * S;
+          ctx.strokeRect(L.pad, y, L.photoW, L.photoH);
+          ctx.strokeStyle = 'rgba(217,142,59,0.35)';
+          ctx.lineWidth = 6 * S;
+          ctx.strokeRect(L.pad - 5 * S, y - 5 * S, L.photoW + 10 * S, L.photoH + 10 * S);
+        });
+
+        const ticket = ticketNumber;
+        ctx.fillStyle = '#efe6d8';
+        const maxTextW3 = L.width - 56 * S;
+        const capText3 = getCaptionText('Night Arcade');
+        const capSize3 = fitFontSize(ctx, capText3, maxTextW3, 22 * S, 13 * S, s => `600 ${s}px Fraunces, serif`);
+        ctx.font = `600 ${capSize3}px Fraunces, serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText(capText3, L.width / 2, L.height - 44 * S);
+
+        ctx.fillStyle = '#d98e3b';
+        const dateText3 = `strip no. ${ticket}  ·  ${getDateText()}`;
+        const dateSize3 = fitFontSize(ctx, dateText3, maxTextW3, 12 * S, 8 * S, s => `${s}px "IBM Plex Mono", monospace`);
+        ctx.font = `${dateSize3}px "IBM Plex Mono", monospace`;
+        ctx.fillText(dateText3, L.width / 2, L.height - 22 * S);
+        return c;
+      }
+
+      function buildBlush(shots) {
+        const L = baseLayout();
+        const S = L.scale;
+        const c = document.createElement('canvas');
+        c.width = L.width; c.height = L.height;
+        const ctx = c.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+
+        const grad = ctx.createLinearGradient(0, 0, 0, L.height);
+        grad.addColorStop(0, '#ffeef5');
+        grad.addColorStop(1, '#ffd6e8');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, L.width, L.height);
+
+        shots.forEach((shot, i) => {
+          const y = L.pad + i * (L.photoH + L.gap);
+          // a soft rose "shadow" card sitting behind the white polaroid frame
+          roundRectPath(ctx, L.pad + 3 * S, y + 5 * S, L.photoW, L.photoH, 12 * S);
+          ctx.fillStyle = 'rgba(214,51,108,0.18)';
+          ctx.fill();
+
+          roundRectPath(ctx, L.pad, y, L.photoW, L.photoH, 12 * S);
+          ctx.fillStyle = '#ffffff';
+          ctx.fill();
+          ctx.save();
+          roundRectPath(ctx, L.pad + 6 * S, y + 6 * S, L.photoW - 12 * S, L.photoH - 12 * S, 8 * S);
+          ctx.clip();
+          ctx.filter = 'saturate(1.12) brightness(1.04) contrast(1.02)';
+          ctx.drawImage(shot, L.pad + 6 * S, y + 6 * S, L.photoW - 12 * S, L.photoH - 12 * S);
+          ctx.restore();
+        });
+
+        // three little confetti dots, echoing the capture-progress dots
+        const dotY = L.height - 62 * S;
+        const dotColors = ['#d6336c', '#f8a1c4', '#ffb703'];
+        const dotSpacing = 12 * S;
+        const dotStartX = L.width / 2 - dotSpacing;
+        dotColors.forEach((color, i) => {
+          ctx.beginPath();
+          ctx.fillStyle = color;
+          ctx.arc(dotStartX + i * dotSpacing, dotY, 3.2 * S, 0, Math.PI * 2);
+          ctx.fill();
+        });
+
+        ctx.fillStyle = '#d6336c';
+        const maxTextW4 = L.width - 56 * S;
+        const capText4 = getCaptionText('Blush Pop');
+        const capSize4 = fitFontSize(ctx, capText4, maxTextW4, 24 * S, 13 * S, s => `600 ${s}px Fraunces, serif`);
+        ctx.font = `600 ${capSize4}px Fraunces, serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText(capText4, L.width / 2, L.height - 40 * S);
+
+        ctx.fillStyle = '#a94476';
+        const dateText4 = getDateText();
+        const dateSize4 = fitFontSize(ctx, dateText4, maxTextW4, 12 * S, 9 * S, s => `${s}px "IBM Plex Mono", monospace`);
+        ctx.font = `${dateSize4}px "IBM Plex Mono", monospace`;
+        ctx.fillText(dateText4, L.width / 2, L.height - 20 * S);
+        return c;
+      }
+
+      function getCaptionText(fallback) {
+        const v = captionInput.value.trim();
+        return v.length ? v : fallback;
+      }
+
+      function getDateText() {
+        const v = dateInput.value.trim();
+        return v.length ? v : formatDate();
+      }
+
+      function fitFontSize(ctx, text, maxWidth, maxSize, minSize, fontBuilder) {
+        let size = maxSize;
+        ctx.font = fontBuilder(size);
+        while (size > minSize && ctx.measureText(text).width > maxWidth) {
+          size -= 1;
+          ctx.font = fontBuilder(size);
+        }
+        return size;
+      }
+
+      function roundRectPath(ctx, x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+      }
+
+      function formatDate() {
+        const d = new Date();
+        return d.toLocaleDateString(undefined, { month: 'short', day: '2-digit', year: 'numeric' });
+      }
+    })();
+  </script>
+</body>
+
+</html>
